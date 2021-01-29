@@ -2,9 +2,13 @@
 name = "inventorize"
 version = "0.1.0"
 authors = ["Roman Dmitrienko <me@iamroman.org>"]
+description = "A command-line file integrity verification tool"
+license = "MIT"
+homepage = "https://github.com/rdmitr/inventorize"
+repository = "https://github.com/rdmitr/inventorize"
+categories = ["command-line-utilities", "filesystem"]
 edition = "2018"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 clap = { version = "2", default-features = false }

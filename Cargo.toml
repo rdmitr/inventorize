@@ -1,0 +1,17 @@
+[package]
+name = "inventorize"
+version = "0.1.0"
+authors = ["Roman Dmitrienko <me@iamroman.org>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+clap = { version = "2", default-features = false }
+digest = "0.9.0"
+env_logger = "0.8.2"
+log = "0.4.13"
+md-5 = "0.9.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha-1 = "0.9.2"

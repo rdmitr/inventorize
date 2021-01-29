@@ -1,5 +1,8 @@
 # inventorize
 
+[![crates.io](https://img.shields.io/crates/v/inventorize.svg)](https://crates.io/crates/inventorize)
+![license](https://img.shields.io/crates/l/inventorize.svg)
+
 `inventorize` is a command-line tool for data integrity verification.
 
 In a nutshell, `inventorize` builds an *inventory* of files in a directory

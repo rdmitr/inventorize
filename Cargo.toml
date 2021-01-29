@@ -1,6 +1,6 @@
 [package]
 name = "inventorize"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Roman Dmitrienko <me@iamroman.org>"]
 description = "A command-line file integrity verification tool"
 license = "MIT"

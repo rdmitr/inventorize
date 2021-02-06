@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::error::Error;
 use std::fmt::Debug;
 use std::fs::{self, OpenOptions};
-use std::io::BufReader;
+use std::io::{BufReader, Result as IoResult};
 use std::path::{Path, PathBuf};
 
 use log::debug;
@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::file_err;
 use crate::hash::{HashAlgorithm, HashValue, Hasher};
-use crate::iterdir::DirectoryIterator;
-use crate::util::FileError;
+use crate::iterdir::RelativePathIterator;
+use crate::util::{self, FileError};
 
 /// Inventory configuration.
 #[derive(Debug, Deserialize, Serialize)]
@@ -152,14 +152,15 @@ impl Inventory {
 
     /// Builds an inventory for the provided repository directory.
     pub fn build(configuration: Configuration, repository: &Path) -> Result<Self, Box<dyn Error>> {
-        let mut files =
-            DirectoryIterator::new(repository, configuration.skip_hidden)?.relative_paths();
-
         let mut hasher = Hasher::new(configuration.hash_algorithms.iter().copied());
         let mut inventory = Inventory::new(configuration);
 
+        let files = inventory.repo_files(repository)?;
+
         // Add the discovered files to the inventory.
-        files.try_for_each(|r| r.and_then(|p| inventory.add_file(repository, &p, &mut hasher)))?;
+        files
+            .into_iter()
+            .try_for_each(|p| inventory.add_file(repository, &p, &mut hasher))?;
 
         Ok(inventory)
     }
@@ -167,12 +168,10 @@ impl Inventory {
     /// Checks the repository and produces the verification report.
     pub fn check(&self, repository: &Path, check_hashes: bool) -> Result<Report, Box<dyn Error>> {
         let mut hasher = Hasher::new(self.configuration.hash_algorithms.iter().copied());
-        let files =
-            DirectoryIterator::new(repository, self.configuration.skip_hidden)?.relative_paths();
 
         // Build a set of repository file paths and a set of file paths recorded in the inventory.
-        let repository_files = files.into_iter().collect::<Result<HashSet<_>, _>>()?;
-        let inventory_files: HashSet<_> = self.records.keys().cloned().collect();
+        let repository_files = self.repo_files(repository)?;
+        let inventory_files: BTreeSet<_> = self.records.keys().cloned().collect();
 
         let mut report = Report::new();
 
@@ -227,12 +226,10 @@ impl Inventory {
         remove_missing: bool,
     ) -> Result<(), Box<dyn Error>> {
         let mut hasher = Hasher::new(self.configuration.hash_algorithms.iter().copied());
-        let files =
-            DirectoryIterator::new(repository, self.configuration.skip_hidden)?.relative_paths();
 
         // Build a set of repository file paths and a set of file paths recorded in the inventory.
-        let repository_files = files.into_iter().collect::<Result<HashSet<PathBuf>, _>>()?;
-        let inventory_files: HashSet<_> = self.records.keys().cloned().collect();
+        let repository_files = self.repo_files(repository)?;
+        let inventory_files: BTreeSet<_> = self.records.keys().cloned().collect();
 
         // Discover files missing from the inventory and add them.
         repository_files
@@ -247,6 +244,25 @@ impl Inventory {
         }
 
         Ok(())
+    }
+
+    /// Returns a set of repository files.
+    fn repo_files<P>(&self, repository: P) -> IoResult<BTreeSet<PathBuf>>
+    where
+        P: AsRef<Path>,
+    {
+        self.repo_iter(repository)?.collect()
+    }
+
+    /// Returns an iterator over the repository files.
+    fn repo_iter<P>(&self, repository: P) -> IoResult<impl Iterator<Item = IoResult<PathBuf>>>
+    where
+        P: AsRef<Path>,
+    {
+        Ok(RepositoryIterator::new(
+            RelativePathIterator::new(repository)?,
+            &self.configuration,
+        ))
     }
 
     /// Produces a file record for the specified file and adds it to the inventory.
@@ -264,7 +280,7 @@ impl Inventory {
 
         let attr = abs_path.metadata().or_else(|e| file_err!(&abs_path, e))?;
 
-        // Create a reader to compute the hash(es) the file contents.
+        // Create a reader to compute the hash(es) of the file contents.
         let reader = BufReader::new(
             OpenOptions::new()
                 .read(true)
@@ -277,5 +293,45 @@ impl Inventory {
         self.records.insert(rel_path.as_ref().to_path_buf(), rec);
 
         Ok(())
+    }
+}
+
+/// An iterator over the repository file paths.
+///
+/// This iterator honors the inventory settings (e.g. filters out hidden files
+/// if needed).
+struct RepositoryIterator<I> {
+    iter: I,
+    skip_hidden: bool,
+}
+
+impl<I: Iterator<Item = IoResult<PathBuf>>> RepositoryIterator<I> {
+    // Creates a new repository file iterator.
+    fn new(iter: I, config: &Configuration) -> Self {
+        RepositoryIterator {
+            skip_hidden: config.skip_hidden,
+            iter,
+        }
+    }
+}
+
+impl<I: Iterator<Item = IoResult<PathBuf>>> Iterator for RepositoryIterator<I> {
+    type Item = IoResult<PathBuf>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        for item in self.iter.by_ref() {
+            match item {
+                Ok(path) => {
+                    if self.skip_hidden && util::is_hidden(&path) {
+                        continue;
+                    } else {
+                        return Some(Ok(path));
+                    }
+                }
+                Err(e) => return Some(Err(e)),
+            }
+        }
+
+        None
     }
 }

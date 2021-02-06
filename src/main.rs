@@ -5,10 +5,13 @@ use std::ffi::OsString;
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::fs::OpenOptions;
 use std::io::{BufReader, BufWriter};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use clap::{crate_authors, crate_version, values_t, App, AppSettings, Arg, SubCommand};
+use clap::{
+    crate_authors, crate_version, value_t_or_exit, values_t_or_exit, App, AppSettings, Arg,
+    SubCommand,
+};
 
 use serde_json;
 
@@ -214,6 +217,39 @@ fn run(parameters: Parameters) -> Result<(), Box<dyn Error>> {
     }
 }
 
+/// Canonicalizes the inventory file path.
+///
+/// The inventory file is not required to exist, since not every subcommand
+/// needs it (e.g. `build`). This means that it cannot be canonicalized using
+/// the `canonicalize()` method.
+///
+/// However, the inventory's parent directory must exist. It can also be empty,
+/// which means that the current working directory is to be used (if e.g.
+/// "inventory.json" is specified as the inventory argument).
+fn canonicalize_inventory_path<P: AsRef<Path>>(inventory: P) -> Result<PathBuf, String> {
+    let inventory = inventory.as_ref();
+    let (dir_path, file_name) = (inventory.parent(), inventory.file_name());
+
+    if dir_path.is_none() || file_name.is_none() {
+        return Err(String::from("inventory filename not specified"));
+    }
+
+    let (dir_path, file_name) = (dir_path.unwrap(), file_name.unwrap());
+
+    let dir_path = if dir_path.as_os_str().len() == 0 {
+        Path::new(".")
+    } else {
+        dir_path
+    };
+
+    let mut ret = dir_path
+        .canonicalize()
+        .map_err(|_| "inventory directory is inaccessible or does not exist".to_string())?;
+    ret.push(file_name);
+
+    Ok(ret)
+}
+
 /// Parses the command line arguments.
 ///
 /// Prints an error message and exits the application if the command-line
@@ -242,7 +278,8 @@ where
                 .help("Path to the inventory file (must be outside of the repository)")
                 .long("inventory")
                 .number_of_values(1)
-                .required(true),
+                .required(true)
+                .validator(|s| canonicalize_inventory_path(PathBuf::from(s)).and_then(|_| Ok(()))),
         )
         .arg(
             Arg::with_name("repository")
@@ -251,10 +288,15 @@ where
                 .long("repository")
                 .number_of_values(1)
                 .validator(|s| {
-                    if PathBuf::from(s).exists() {
-                        Ok(())
-                    } else {
+                    let p = PathBuf::from(s);
+                    if !p.exists() {
                         Err("repository does not exist".to_string())
+                    } else if !p.is_dir() {
+                        Err("repository is not a directory".to_string())
+                    } else if p.canonicalize().is_err() {
+                        Err("cannot canonicalize repository path".to_string())
+                    } else {
+                        Ok(())
                     }
                 }),
         )
@@ -308,7 +350,7 @@ where
         ("build", Some(matches)) => Command::Build(CommandBuild {
             overwrite: matches.is_present("overwrite"),
             skip_hidden: matches.is_present("skip-hidden"),
-            hash_algorithms: values_t!(matches, "hash-algorithm", HashAlgorithm).unwrap(),
+            hash_algorithms: values_t_or_exit!(matches, "hash-algorithm", HashAlgorithm),
         }),
         ("verify", Some(matches)) => Command::Verify(CommandVerify {
             quick: matches.is_present("quick"),
@@ -319,13 +361,24 @@ where
         _ => unreachable!(),
     };
 
+    // Both inventory and repository paths have been validated and thus can be
+    // canonicalized safely.
+    let inventory =
+        canonicalize_inventory_path(&value_t_or_exit!(matches, "inventory", PathBuf)).unwrap();
+    let repository = value_t_or_exit!(matches, "repository", PathBuf)
+        .canonicalize()
+        .unwrap();
+
+    if inventory.starts_with(&repository) {
+        eprintln!("error: inventory must be located outside of the repository");
+        std::process::exit(1);
+    }
+
     Parameters {
         options: Options {
             verbosity: matches.occurrences_of("verbose") as usize,
-            inventory: PathBuf::from(matches.value_of("inventory").unwrap()),
-            repository: PathBuf::from(matches.value_of("repository").unwrap())
-                .canonicalize()
-                .unwrap(),
+            inventory,
+            repository,
         },
         command,
     }
